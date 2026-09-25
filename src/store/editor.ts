@@ -3,6 +3,7 @@ import type { Cue, EditorDocument, Locale, Snapshot } from '../types'
 import { loadDocument, saveDocument } from '../utils/db'
 import { makeId } from '../utils/id'
 import { parseScript, parseSrt, toSrt } from '../utils/subtitle'
+import { isSpeedInRange, suggestedSpeed } from '../utils/dubbing'
 import { translate, type MessageKey } from '../i18n'
 
 const DOCUMENT_ID = 'subtitle-dubbing-document'
@@ -283,6 +284,26 @@ export const useEditorStore = defineStore('subtitle-editor', {
         const index = cues.findIndex((item) => item.id === id)
         if (index >= 0) cues.splice(index, 1)
       }, this.document.cues[Math.max(0, this.document.cues.findIndex((item) => item.id === id) - 1)]?.id ?? null)
+    },
+    applySuggestedSpeeds() {
+      const eligible = this.visibleCues.filter((cue) => !cue.locked && cue.status !== 'reviewed')
+      const kept = this.visibleCues.length - eligible.length
+      const updates = new Map<string, number>()
+      let risky = 0
+      for (const cue of eligible) {
+        const suggestion = Number(suggestedSpeed(cue).toFixed(2))
+        if (isSpeedInRange(suggestion)) updates.set(cue.id, suggestion)
+        else risky += 1
+      }
+      if (updates.size) {
+        this.commit('apply-suggested-speeds', (cues) => {
+          for (const cue of cues) {
+            const speed = updates.get(cue.id)
+            if (speed !== undefined) cue.speed = speed
+          }
+        })
+      }
+      return { applied: updates.size, risky, kept }
     },
     createSnapshot(name: string) {
       const snapshot: Snapshot = { id: makeId('snapshot'), name: name.trim() || `v${this.document.snapshots.length + 1}`, createdAt: Date.now(), cues: cloneCues(this.document.cues) }

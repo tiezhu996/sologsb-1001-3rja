@@ -4,11 +4,14 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Clock, Delete, DocumentCopy, Download, EditPen, Files, Lock, MagicStick, Monitor,
-  RefreshLeft, RefreshRight, Search, Unlock, UploadFilled,
+  Odometer, RefreshLeft, RefreshRight, Search, Unlock, UploadFilled,
 } from '@element-plus/icons-vue'
 import { useEditorStore } from './store/editor'
 import type { Cue, CueConflict } from './types'
 import { formatTime } from './utils/subtitle'
+import {
+  FIT_TOLERANCE, MAX_SPEED, MIN_SPEED, availableWindow, estimateDuration, fitDelta, isSpeedRisk, suggestedSpeed,
+} from './utils/dubbing'
 
 const store = useEditorStore()
 const { document: project, selectedCue, selectedCueId, visibleCues, saveState, conflict, online, timelineZoom, actorFilter } = storeToRefs(store)
@@ -32,6 +35,27 @@ const actorColor = (id: string) => project.value.actors.find((actor) => actor.id
 const actorName = (id: string) => project.value.actors.find((actor) => actor.id === id)?.name ?? '—'
 const statusLabel = (status: Cue['status']) => store.t(status)
 const statusType = (status: Cue['status']) => status === 'reviewed' ? 'success' : status === 'issue' ? 'danger' : 'info'
+
+const fitDeltaOf = (cue: Cue) => Math.round(fitDelta(cue) * 10) / 10
+const fitClass = (cue: Cue) => {
+  const delta = fitDelta(cue)
+  return delta > FIT_TOLERANCE ? 'over' : delta < -FIT_TOLERANCE ? 'under' : 'ok'
+}
+const fitLabel = (cue: Cue) => {
+  const state = fitClass(cue)
+  if (state === 'over') return store.t('fitOver', { seconds: fitDeltaOf(cue).toFixed(1) })
+  if (state === 'under') return store.t('fitUnder', { seconds: Math.abs(fitDeltaOf(cue)).toFixed(1) })
+  return store.t('fitOk')
+}
+const fitSummary = (cue: Cue) => store.t('fitSummary', { estimated: estimateDuration(cue).toFixed(1), window: availableWindow(cue).toFixed(1) })
+function applySuggestedSpeeds() {
+  const result = store.applySuggestedSpeeds()
+  if (!result.applied && !result.risky) {
+    ElMessage.info(store.t('speedBatchNone'))
+    return
+  }
+  ElMessage({ type: result.risky ? 'warning' : 'success', message: store.t('speedBatchResult', result) })
+}
 
 function updateSelected(patch: Partial<Cue>, label = 'update-cue') {
   if (selectedCue.value) store.updateCue(selectedCue.value.id, patch, label)
@@ -218,7 +242,7 @@ const handleOffline = () => setOnline(false)
                 v-for="cue in filteredCues" :key="cue.id" class="timeline-block" :class="{ active: cue.id === selectedCueId, issue: cue.status === 'issue', locked: cue.locked }"
                 :style="{ left: `${(cue.start / store.totalDuration) * 100}%`, width: `${Math.max(1.8, ((cue.end - cue.start) / store.totalDuration) * 100)}%`, borderColor: actorColor(cue.actorId) }"
                 :title="`${formatTime(cue.start)} · ${cue.source}`" @click="store.selectCue(cue.id)"
-              ><span>{{ actorName(cue.actorId).split('/')[0] }}</span><b>{{ cue.target || cue.source }}</b></button>
+              ><span>{{ actorName(cue.actorId).split('/')[0] }}</span><b>{{ cue.target || cue.source }}</b><i v-if="fitClass(cue) !== 'ok'" class="fit-badge" :class="fitClass(cue)">{{ fitDeltaOf(cue) > 0 ? '+' : '' }}{{ fitDeltaOf(cue).toFixed(1) }}s</i></button>
               <div class="timeline-ruler"><span v-for="tick in [0, 15, 30, 45, 60]" :key="tick" :style="{ left: `${(tick / store.totalDuration) * 100}%` }">{{ tick }}s</span></div>
             </div>
           </div>
@@ -226,7 +250,10 @@ const handleOffline = () => setOnline(false)
 
         <div class="cue-toolbar">
           <div class="section-heading"><span>{{ store.t('cues') }}</span><el-tag size="small" type="info">{{ filteredCues.length }}</el-tag></div>
-          <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索原文或译文" class="cue-search" />
+          <div class="cue-toolbar-actions">
+            <el-button :icon="Odometer" @click="applySuggestedSpeeds">{{ store.t('applySuggestedSpeeds') }}</el-button>
+            <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索原文或译文" class="cue-search" />
+          </div>
           <el-select v-model="actorFilter" class="actor-mobile-filter">
             <el-option :label="store.t('allActors')" value="all" />
             <el-option v-for="actor in project.actors" :key="actor.id" :label="actor.name" :value="actor.id" />
@@ -245,6 +272,8 @@ const handleOffline = () => setOnline(false)
                 <code>{{ formatTime(cue.start) }} → {{ formatTime(cue.end) }}</code>
                 <el-tag size="small" :type="statusType(cue.status)">{{ statusLabel(cue.status) }}</el-tag>
                 <el-icon v-if="cue.locked"><Lock /></el-icon>
+                <span class="cue-fit" :class="fitClass(cue)" :title="fitSummary(cue)">{{ fitLabel(cue) }}</span>
+                <el-tag v-if="isSpeedRisk(cue)" size="small" type="danger">{{ store.t('speedRisk') }}</el-tag>
                 <span class="cue-warning-count" v-if="cueWarnings(cue).length">{{ cueWarnings(cue).length }} context</span>
               </div>
               <p class="source-text">{{ cue.source }}</p>
@@ -293,6 +322,14 @@ const handleOffline = () => setOnline(false)
             <el-button :icon="selectedCue.locked ? Unlock : Lock" @click="store.toggleLock(selectedCue.id)">{{ selectedCue.locked ? store.t('unlock') : store.t('lock') }}</el-button>
             <el-button @click="store.moveCue(selectedCue.id, -1)">↑ {{ store.t('moveUp') }}</el-button>
             <el-button @click="store.moveCue(selectedCue.id, 1)">↓ {{ store.t('moveDown') }}</el-button>
+          </div>
+
+          <div class="check-card">
+            <h3>{{ store.t('dubbingFit') }}</h3>
+            <p>{{ fitSummary(selectedCue) }}</p>
+            <p :class="fitClass(selectedCue) === 'over' ? 'check-warning' : 'check-ok'">{{ fitLabel(selectedCue) }}</p>
+            <p>{{ store.t('suggestedSpeed', { speed: suggestedSpeed(selectedCue).toFixed(2) }) }}</p>
+            <p v-if="isSpeedRisk(selectedCue)" class="check-warning">{{ store.t('speedOutOfRange', { speed: suggestedSpeed(selectedCue).toFixed(2), min: MIN_SPEED, max: MAX_SPEED }) }}</p>
           </div>
 
           <div class="check-card">
