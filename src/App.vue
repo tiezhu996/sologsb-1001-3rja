@@ -4,11 +4,12 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Clock, Delete, DocumentCopy, Download, EditPen, Files, Lock, MagicStick, Monitor,
-  RefreshLeft, RefreshRight, Search, Unlock, UploadFilled,
+  RefreshLeft, RefreshRight, Search, Timer, Unlock, UploadFilled,
 } from '@element-plus/icons-vue'
 import { useEditorStore } from './store/editor'
-import type { Cue, CueConflict } from './types'
+import type { Cue, CueConflict, TimingEstimate } from './types'
 import { formatTime } from './utils/subtitle'
+import { formatDelta, SPEED_MAX, SPEED_MIN } from './utils/timing'
 
 const store = useEditorStore()
 const { document: project, selectedCue, selectedCueId, visibleCues, saveState, conflict, online, timelineZoom, actorFilter } = storeToRefs(store)
@@ -65,6 +66,50 @@ function cueWarnings(cue: Cue): CueConflict[] {
 }
 function termMismatches(cue: Cue) {
   return project.value.terms.filter((term) => cue.termIds.includes(term.id) && cue.target && !cue.target.includes(term.target))
+}
+const timingMap = computed(() => {
+  const map = new Map<string, TimingEstimate>()
+  for (const cue of project.value.cues) map.set(cue.id, store.timingFor(cue))
+  return map
+})
+const timingOf = (cue: Cue): TimingEstimate => timingMap.value.get(cue.id) ?? store.timingFor(cue)
+const oneDecimal = (value: number) => (Math.round(value * 10) / 10).toFixed(1)
+function timingStatusMessage(estimate: TimingEstimate) {
+  if (estimate.status === 'over') return store.t('timingOver', { seconds: oneDecimal(Math.abs(estimate.slack)) })
+  if (estimate.status === 'spare') return store.t('timingSpare', { seconds: oneDecimal(estimate.slack) })
+  return store.t('timingFit')
+}
+function timingTitle(cue: Cue) {
+  const estimate = timingOf(cue)
+  return [
+    store.t('timingSummary', { spoken: oneDecimal(estimate.spoken), available: oneDecimal(estimate.available) }),
+    timingStatusMessage(estimate),
+    estimate.targetEmpty ? store.t('estimateFallback') : '',
+  ].filter(Boolean).join(' · ')
+}
+const batchPlan = computed(() => {
+  let adopted = 0
+  let skipped = 0
+  let risk = 0
+  for (const cue of visibleCues.value) {
+    if (cue.locked || cue.status === 'reviewed') { skipped += 1; continue }
+    const estimate = timingOf(cue)
+    if (estimate.status === 'fit' || estimate.units === 0) continue
+    if (!estimate.suggestionInRange) { risk += 1; continue }
+    if (Math.abs(Number(estimate.suggested.toFixed(2)) - cue.speed) < 0.005) continue
+    adopted += 1
+  }
+  return { adopted, skipped, risk }
+})
+const batchScopeLabel = computed(() => actorFilter.value === 'all' ? store.t('allActors') : actorName(actorFilter.value))
+function applyBatchSpeeds() {
+  const result = store.applySuggestedSpeeds()
+  if (result.adopted > 0) ElMessage.success(store.t('batchDone', { adopted: result.adopted }))
+  else ElMessage.warning(store.t('batchNoop'))
+}
+function adoptSelectedSpeed(estimate: TimingEstimate) {
+  if (!selectedCue.value || !estimate.suggestionInRange) return
+  updateSelected({ speed: Number(estimate.suggested.toFixed(2)) }, 'speed-suggestion')
 }
 async function importFile(event: Event) {
   const input = event.target as HTMLInputElement
@@ -178,6 +223,13 @@ const handleOffline = () => setOnline(false)
             <span class="actor-dot" :style="{ background: actor.color }" />{{ actor.name }}
             <b>{{ project.cues.filter((cue) => cue.actorId === actor.id).length }}</b>
           </button>
+          <div v-for="actor in project.actors" :key="`${actor.id}-rate`" class="actor-rate" :class="{ active: actorFilter === actor.id }">
+            <span class="actor-rate-label">{{ store.t('baseRate') }}</span>
+            <el-input-number
+              :model-value="actor.rate" :min="2" :max="8" :step="0.1" :controls="false" size="small"
+              :title="store.t('baseRate')" @change="store.updateActorRate(actor.id, Number($event))"
+            />
+          </div>
         </section>
         <section>
           <div class="section-heading"><span><el-icon><EditPen /></el-icon>{{ store.t('terms') }}</span><small>{{ project.terms.length }}</small></div>
@@ -210,15 +262,23 @@ const handleOffline = () => setOnline(false)
         <div class="timeline-card">
           <div class="section-heading">
             <span><el-icon><Clock /></el-icon>{{ store.t('timeline') }}</span>
-            <div class="zoom-control"><small>{{ store.t('zoom') }}</small><el-slider v-model="timelineZoom" :min="0.7" :max="3" :step="0.1" /></div>
+            <div class="timeline-tools">
+              <span class="timing-legend"><i class="over" />{{ store.t('overTag') }}<i class="spare" />{{ store.t('spareTag') }}</span>
+              <div class="zoom-control"><small>{{ store.t('zoom') }}</small><el-slider v-model="timelineZoom" :min="0.7" :max="3" :step="0.1" /></div>
+            </div>
           </div>
           <div class="timeline-scroll">
             <div class="timeline" :style="{ width: `${timelineZoom * 100}%` }">
               <button
-                v-for="cue in filteredCues" :key="cue.id" class="timeline-block" :class="{ active: cue.id === selectedCueId, issue: cue.status === 'issue', locked: cue.locked }"
+                v-for="cue in filteredCues" :key="cue.id" class="timeline-block"
+                :class="{ active: cue.id === selectedCueId, issue: cue.status === 'issue', locked: cue.locked, [`timing-${timingOf(cue).status}`]: timingOf(cue).units > 0, 'timing-risk': timingOf(cue).status === 'over' && !timingOf(cue).suggestionInRange }"
                 :style="{ left: `${(cue.start / store.totalDuration) * 100}%`, width: `${Math.max(1.8, ((cue.end - cue.start) / store.totalDuration) * 100)}%`, borderColor: actorColor(cue.actorId) }"
-                :title="`${formatTime(cue.start)} · ${cue.source}`" @click="store.selectCue(cue.id)"
-              ><span>{{ actorName(cue.actorId).split('/')[0] }}</span><b>{{ cue.target || cue.source }}</b></button>
+                :title="`${formatTime(cue.start)} · ${cue.source}\n${timingTitle(cue)}`" @click="store.selectCue(cue.id)"
+              >
+                <span>{{ actorName(cue.actorId).split('/')[0] }}</span>
+                <b>{{ cue.target || cue.source }}</b>
+                <em v-if="timingOf(cue).units > 0" class="timing-chip" :class="timingOf(cue).status">{{ formatDelta(timingOf(cue).slack) }}</em>
+              </button>
               <div class="timeline-ruler"><span v-for="tick in [0, 15, 30, 45, 60]" :key="tick" :style="{ left: `${(tick / store.totalDuration) * 100}%` }">{{ tick }}s</span></div>
             </div>
           </div>
@@ -226,11 +286,23 @@ const handleOffline = () => setOnline(false)
 
         <div class="cue-toolbar">
           <div class="section-heading"><span>{{ store.t('cues') }}</span><el-tag size="small" type="info">{{ filteredCues.length }}</el-tag></div>
-          <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索原文或译文" class="cue-search" />
-          <el-select v-model="actorFilter" class="actor-mobile-filter">
-            <el-option :label="store.t('allActors')" value="all" />
-            <el-option v-for="actor in project.actors" :key="actor.id" :label="actor.name" :value="actor.id" />
-          </el-select>
+          <div class="cue-toolbar-actions">
+            <el-tooltip placement="top" popper-class="batch-speed-tip">
+              <template #content>
+                <div class="batch-tip">
+                  <p>{{ store.t('batchScope', { scope: batchScopeLabel }) }}</p>
+                  <p>{{ store.t('batchSummary', batchPlan) }}</p>
+                  <p>{{ store.t('speedRange', { min: SPEED_MIN, max: SPEED_MAX }) }}</p>
+                </div>
+              </template>
+              <el-button size="small" :icon="Timer" :disabled="!batchPlan.adopted" @click="applyBatchSpeeds">{{ store.t('batchAdopt') }}</el-button>
+            </el-tooltip>
+            <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索原文或译文" class="cue-search" />
+            <el-select v-model="actorFilter" class="actor-mobile-filter">
+              <el-option :label="store.t('allActors')" value="all" />
+              <el-option v-for="actor in project.actors" :key="actor.id" :label="actor.name" :value="actor.id" />
+            </el-select>
+          </div>
         </div>
 
         <div class="cue-list">
@@ -245,6 +317,13 @@ const handleOffline = () => setOnline(false)
                 <code>{{ formatTime(cue.start) }} → {{ formatTime(cue.end) }}</code>
                 <el-tag size="small" :type="statusType(cue.status)">{{ statusLabel(cue.status) }}</el-tag>
                 <el-icon v-if="cue.locked"><Lock /></el-icon>
+                <span
+                  v-if="timingOf(cue).units > 0" class="timing-chip"
+                  :class="[timingOf(cue).status, { risk: timingOf(cue).status === 'over' && !timingOf(cue).suggestionInRange, pinned: cue.locked || cue.status === 'reviewed' }]"
+                  :title="timingTitle(cue)"
+                >
+                  <el-icon><Timer /></el-icon>{{ oneDecimal(timingOf(cue).spoken) }}s / {{ oneDecimal(timingOf(cue).available) }}s · {{ formatDelta(timingOf(cue).slack) }}
+                </span>
                 <span class="cue-warning-count" v-if="cueWarnings(cue).length">{{ cueWarnings(cue).length }} context</span>
               </div>
               <p class="source-text">{{ cue.source }}</p>
@@ -284,6 +363,25 @@ const handleOffline = () => setOnline(false)
           <div class="two-columns">
             <div><label>{{ store.t('speed') }}</label><el-input-number :model-value="selectedCue.speed" :disabled="selectedCue.locked" :min="0.5" :max="1.8" :step="0.01" controls-position="right" @change="updateSelected({ speed: Number($event) }, 'speed')" /></div>
             <div><label>{{ store.t('status') }}</label><el-select :model-value="selectedCue.status" :disabled="selectedCue.locked" @change="store.markStatus(selectedCue.id, $event)"><el-option :label="store.t('draft')" value="draft" /><el-option :label="store.t('reviewed')" value="reviewed" /><el-option :label="store.t('issue')" value="issue" /></el-select></div>
+          </div>
+
+          <div class="check-card timing-card" :class="timingOf(selectedCue).status">
+            <h3><el-icon><Timer /></el-icon>{{ store.t('timing') }}</h3>
+            <div class="timing-figure">
+              <span :class="timingOf(selectedCue).status">{{ formatDelta(timingOf(selectedCue).slack) }}</span>
+              <small>{{ store.t('timingSummary', { spoken: oneDecimal(timingOf(selectedCue).spoken), available: oneDecimal(timingOf(selectedCue).available) }) }}</small>
+            </div>
+            <p :class="timingOf(selectedCue).status === 'over' ? 'check-warning' : 'check-ok'">{{ timingStatusMessage(timingOf(selectedCue)) }}</p>
+            <p v-if="timingOf(selectedCue).targetEmpty" class="check-warning">{{ store.t('estimateFallback') }}</p>
+            <div v-if="timingOf(selectedCue).status !== 'fit' && timingOf(selectedCue).units > 0" class="suggested-speed">
+              <label>{{ store.t('suggestedSpeed') }}：<b :class="{ out: !timingOf(selectedCue).suggestionInRange }">{{ timingOf(selectedCue).suggested.toFixed(2) }}×</b></label>
+              <el-button
+                size="small" type="primary" plain :icon="MagicStick" :disabled="selectedCue.locked || !timingOf(selectedCue).suggestionInRange"
+                @click="adoptSelectedSpeed(timingOf(selectedCue))"
+              >{{ store.t('adoptSuggestion') }}</el-button>
+            </div>
+            <p v-if="timingOf(selectedCue).status !== 'fit' && !timingOf(selectedCue).suggestionInRange" class="check-warning">{{ store.t('outOfRangeSpeed', { speed: timingOf(selectedCue).suggested.toFixed(2), min: SPEED_MIN, max: SPEED_MAX }) }}</p>
+            <p class="timing-range-note">{{ store.t('speedRange', { min: SPEED_MIN, max: SPEED_MAX }) }}</p>
           </div>
           <label>{{ store.t('termsUsed') }}</label>
           <el-select :model-value="selectedCue.termIds" multiple :disabled="selectedCue.locked" @change="updateSelected({ termIds: $event }, 'terms')">

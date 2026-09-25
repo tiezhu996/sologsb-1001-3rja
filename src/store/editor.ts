@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
-import type { Cue, EditorDocument, Locale, Snapshot } from '../types'
+import type { BatchTimingResult, Cue, EditorDocument, Locale, Snapshot, TimingEstimate } from '../types'
 import { loadDocument, saveDocument } from '../utils/db'
 import { makeId } from '../utils/id'
 import { parseScript, parseSrt, toSrt } from '../utils/subtitle'
+import { estimateTiming } from '../utils/timing'
 import { translate, type MessageKey } from '../i18n'
 
 const DOCUMENT_ID = 'subtitle-dubbing-document'
@@ -20,10 +21,10 @@ const createDefaultDocument = (): EditorDocument => ({
   updatedAt: Date.now(),
   lastWriter: '',
   actors: [
-    { id: 'actor-narrator', name: '旁白 / Narrator', color: '#2f6fed', localeHint: 'zh-CN' },
-    { id: 'actor-lin', name: '林博士 / Dr. Lin', color: '#cf5a39', localeHint: 'zh-CN' },
-    { id: 'actor-chen', name: '陈工 / Engineer Chen', color: '#14866d', localeHint: 'zh-CN' },
-    { id: 'actor-host', name: '主持人 / Host', color: '#7d53b8', localeHint: 'zh-CN' },
+    { id: 'actor-narrator', name: '旁白 / Narrator', color: '#2f6fed', localeHint: 'zh-CN', rate: 4.6 },
+    { id: 'actor-lin', name: '林博士 / Dr. Lin', color: '#cf5a39', localeHint: 'zh-CN', rate: 4.4 },
+    { id: 'actor-chen', name: '陈工 / Engineer Chen', color: '#14866d', localeHint: 'zh-CN', rate: 4.9 },
+    { id: 'actor-host', name: '主持人 / Host', color: '#7d53b8', localeHint: 'zh-CN', rate: 4.7 },
   ],
   terms: [
     { id: 'term-01', source: 'open source', target: '开源', note: '产品语境' },
@@ -37,7 +38,7 @@ const createDefaultDocument = (): EditorDocument => ({
     { id: 'cue-demo-03', start: 8.8, end: 13.5, source: '每个拉取请求背后，都有一段需要被理解的上下文。', target: '每个拉取请求背后，都有一段需要被理解的上下文。', actorId: 'actor-lin', speed: 0.96, termIds: ['term-03'], status: 'reviewed', locked: false },
     { id: 'cue-demo-04', start: 13.7, end: 18.8, source: '请您先介绍一次印象最深的代码评审。', target: '请您先介绍一次印象最深的代码评审。', actorId: 'actor-host', speed: 1.03, termIds: [], status: 'draft', locked: false },
     { id: 'cue-demo-05', start: 19, end: 25.1, source: '那次修改很小，却让新用户第一次能够顺利完成安装。', target: '那次修改很小，却让新用户第一次顺利完成安装。', actorId: 'actor-lin', speed: 0.98, termIds: [], status: 'issue', locked: false },
-    { id: 'cue-demo-06', start: 25.4, end: 31.2, source: '所以我们决定把安装说明拆开，并为每个平台补上验证步骤。', target: '因此，我们拆分安装说明，并为每个平台补上验证步骤。', actorId: 'actor-chen', speed: 1.05, termIds: [], status: 'draft', locked: false },
+    { id: 'cue-demo-06', start: 25.4, end: 31.2, source: '所以我们决定把安装说明拆开，并为每个平台补上验证步骤。', target: '因此，我们最终决定把原本的安装说明进一步拆分成多个步骤，并且为每一个平台都补充了详细的验证流程。', actorId: 'actor-chen', speed: 1.05, termIds: [], status: 'draft', locked: false },
   ],
   snapshots: [],
 })
@@ -70,6 +71,9 @@ export const useEditorStore = defineStore('subtitle-editor', {
       return state.actorFilter === 'all'
         ? state.document.cues
         : state.document.cues.filter((cue) => cue.actorId === state.actorFilter)
+    },
+    timingFor(state): (cue: Cue) => TimingEstimate {
+      return (cue: Cue) => estimateTiming(cue, state.document.actors.find((actor) => actor.id === cue.actorId))
     },
     totalDuration(state): number {
       return Math.max(10, ...state.document.cues.map((cue) => cue.end)) * 1.04
@@ -223,6 +227,41 @@ export const useEditorStore = defineStore('subtitle-editor', {
     },
     toggleLock(id: string) {
       this.updateCue(id, { locked: !this.document.cues.find((cue) => cue.id === id)?.locked }, 'toggle-lock')
+    },
+    updateActorRate(id: string, rate: number) {
+      const actor = this.document.actors.find((item) => item.id === id)
+      if (!actor || actor.rate === rate) return
+      actor.rate = rate
+      this.markChanged('actor-rate')
+    },
+    /**
+     * 按当前角色筛选批量采用建议语速。
+     * 锁定与已确认的台词保持原速；建议超出允许范围 [SPEED_MIN, SPEED_MAX]
+     * 的台词只标风险、不写入语速；整批调整只产生一条历史记录，可一次撤销。
+     */
+    applySuggestedSpeeds(cues?: Cue[]): BatchTimingResult {
+      const scope = cues ?? this.visibleCues
+      const result: BatchTimingResult = { adopted: 0, skipped: 0, risk: 0 }
+      const plan = new Map<string, number>()
+      for (const cue of scope) {
+        if (cue.locked || cue.status === 'reviewed') { result.skipped += 1; continue }
+        const estimate = estimateTiming(cue, this.document.actors.find((actor) => actor.id === cue.actorId))
+        if (estimate.status === 'fit' || estimate.units === 0) continue
+        if (!estimate.suggestionInRange) { result.risk += 1; continue }
+        const speed = Number(estimate.suggested.toFixed(2))
+        if (Math.abs(speed - cue.speed) < 0.005) continue
+        plan.set(cue.id, speed)
+      }
+      if (plan.size) {
+        this.commit('batch-speed', (working) => {
+          for (const item of working) {
+            const speed = plan.get(item.id)
+            if (speed !== undefined) item.speed = speed
+          }
+        })
+        result.adopted = plan.size
+      }
+      return result
     },
     splitCue(id: string) {
       const source = this.document.cues.find((cue) => cue.id === id)

@@ -46,6 +46,10 @@ button, input, textarea { font: inherit; }
 .actor-filter b, .section-heading small { color: #8793a7; font-size: 11px; }
 .actor-dot { width: 8px; height: 8px; border-radius: 50%; }
 .actor-dot.all { background: #8c98aa; box-shadow: 0 0 0 4px #e9edf3; }
+.actor-rate { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px 6px 28px; }
+.actor-rate .actor-rate-label { color: #8a95a7; font-size: 10px; }
+.actor-rate .el-input-number { width: 76px; }
+.actor-rate .el-input-number .el-input__inner { text-align: right; }
 .term-card { padding: 9px 0; border-bottom: 1px solid #edf1f6; }
 .term-card div { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .term-card b { color: #233452; }
@@ -70,9 +74,29 @@ button, input, textarea { font: inherit; }
 .timeline-block.active { color: #fff; background: #234f9d; box-shadow: 0 0 0 2px #9db9ed; }
 .timeline-block.issue { outline: 2px solid #e86b64; }
 .timeline-block.locked { opacity: .62; }
+.timeline-tools { display: flex; align-items: center; gap: 14px; }
+.timing-legend { display: inline-flex; align-items: center; gap: 5px; color: #8a95a7; font-size: 10px; font-weight: 400; white-space: nowrap; }
+.timing-legend i { width: 7px; height: 7px; border-radius: 50%; margin-left: 4px; }
+.timing-legend i.over { background: #e8883c; }
+.timing-legend i.risk { background: #e25f59; }
+.timing-legend i.spare { background: #4aa886; }
+.timing-chip { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; font-size: 10px; font-style: normal; font-weight: 700; line-height: 1.5; white-space: nowrap; }
+.timing-chip.over { color: #fff; background: #e8883c; }
+.timing-chip.spare { color: #1f6b53; background: #dcf3e9; }
+.timing-chip.fit { color: #4a5a72; background: #e8edf5; }
+.timing-chip.risk { background: #e25f59; }
+.timing-chip.pinned { box-shadow: inset 0 0 0 1px rgba(24, 36, 55, .25); }
+.timeline-block .timing-chip { position: absolute; right: 4px; bottom: 4px; padding: 1px 6px; font-size: 9px; }
+.timeline-block.active .timing-chip.fit { color: #234f9d; background: #dce7fb; }
+.timeline-block.timing-over { background: #fbeede; }
+.timeline-block.timing-over.active { background: #234f9d; }
+.timeline-block.timing-risk { outline: 2px solid #e25f59; }
 .timeline-ruler { position: absolute; left: 0; right: 0; top: 67px; }
 .timeline-ruler span { position: absolute; color: #98a3b4; font-size: 9px; }
 .cue-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 18px 2px 8px; }
+.cue-toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.batch-tip p { margin: 2px 0; line-height: 1.5; }
+.el-popper.batch-speed-tip { max-width: 300px; }
 .cue-search { width: 230px; }
 .actor-mobile-filter { display: none; }
 .cue-list { display: grid; gap: 7px; }
@@ -106,6 +130,20 @@ button, input, textarea { font: inherit; }
 .check-card p { margin: 5px 0; font-size: 11px; line-height: 1.45; }
 .check-ok { color: #358268; }
 .check-warning { color: #ad6610; }
+.timing-card h3 { display: flex; align-items: center; gap: 6px; }
+.timing-card.over { border-color: #f0cfa6; background: #fdf8f1; }
+.timing-card.spare { border-color: #bfe4d5; background: #f3faf6; }
+.timing-figure { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 2px; }
+.timing-figure span { font-size: 22px; font-weight: 750; line-height: 1.1; }
+.timing-figure span.over { color: #d1751f; }
+.timing-figure span.spare { color: #1f8a67; }
+.timing-figure span.fit { color: #4a5a72; }
+.timing-figure small { color: #7b8799; font-size: 10px; }
+.suggested-speed { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+.suggested-speed label { margin: 0; font-size: 11px; font-weight: 400; color: #5c6a82; }
+.suggested-speed b.out { color: #d14942; }
+.timing-range-note { color: #93a0b3 !important; font-size: 10px !important; }
+.cue-topline .timing-chip { margin-left: 2px; }
 .cue-index { color: #8190a7; font-family: ui-monospace, monospace; }
 .shortcut-bar { position: fixed; z-index: 25; left: 258px; right: 360px; bottom: 0; height: 36px; display: flex; align-items: center; gap: 16px; padding: 0 18px; color: #c8d3e3; background: rgba(16, 29, 49, .96); font-size: 10px; }
 .shortcut-bar strong { color: #f2ba5d; }
